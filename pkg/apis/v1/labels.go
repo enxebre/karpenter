@@ -58,18 +58,29 @@ const (
 )
 
 var (
-	// RestrictedLabelDomains are either prohibited by the kubelet or reserved by karpenter
+	// RestrictedLabelDomains are either rejected by the kubelet node restriction admission or reserved by karpenter
 	RestrictedLabelDomains = sets.New(
 		"kubernetes.io",
 		"k8s.io",
 		apis.Group,
 	)
 
-	// LabelDomainExceptions are sub-domains of the RestrictedLabelDomains but allowed because
-	// they are not used in a context where they may be passed as argument to kubelet.
-	LabelDomainExceptions = sets.New(
-		"kops.k8s.io",
+	// KubeletSelfSetAllowed are labels that the node restriction admission allows kubelet to set on itself.
+	KubeletSelfSetSuffixesAllowed = sets.New(
 		v1.LabelNamespaceSuffixNode,
+	)
+
+	// LabelDomainExceptions are sub-domains of the RestrictedLabelDomains but allowed because
+	// they are rejected by node restriction kubelet self setting but an admin might choose to use these labels for workload isolation purposes.
+	// Karpenter will sync these labels into Nodes centrally.
+	// Bootstrap userdata implementers should filter this out from what's passed to kubelet. If they don't and the node restriction admission is enabled, the node will be rejected.
+	// https://github.com/kubernetes/enhancements/blob/1226bed199ae346f935dbb8600393c9f116e6b80/keps/sig-auth/279-limit-node-access/README.md#proposal
+	LabelDomainExceptions = sets.New(
+		// "node-role.kubernetes.io is a widely adopted convention purely informational that can be used by consumers for taints, tolerations, or other configurations.
+		// https://github.com/kubernetes/enhancements/blob/1226bed199ae346f935dbb8600393c9f116e6b80/keps/sig-architecture/1143-node-role-labels/README.md#goals
+		// If your bootstrap userdata implementation try to set the labels below via kubelet, the node restriction admission will reject them.
+		"node-role.kubernetes.io",
+		"kops.k8s.io",
 		v1.LabelNamespaceNodeRestriction,
 	)
 
@@ -128,6 +139,18 @@ func IsRestrictedNodeLabel(key string) bool {
 			return false
 		}
 	}
+
+	for kubeletSelfSetSuffixAllowed := range KubeletSelfSetSuffixesAllowed {
+		if strings.HasSuffix(labelDomain, kubeletSelfSetSuffixAllowed) {
+			return false
+		}
+	}
+
+	// TODO(enxebre): consider dropping this check and just allow any label.
+	// nodeClaim Labels are the source for core karpenter to centrally sync over Node Labels.
+	// Some bootstrap userdata provider implementations also consume this labels and pass them through kubelet self setting.
+	// That results in a coupling between a centralized and a kubelet self setting approach.
+	// We should decouple this an only filter out what's passed to kubelet.
 	for restrictedLabelDomain := range RestrictedLabelDomains {
 		if strings.HasSuffix(labelDomain, restrictedLabelDomain) {
 			return true
